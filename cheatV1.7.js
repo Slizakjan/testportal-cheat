@@ -4,7 +4,7 @@
 // @version      1.7
 // @author       Slizak_jan
 // @description  Automatické získávání odpovědí pomocí Groq API s ignor logikou, striktním promptem a podporou checkboxů
-// @match        *://*/*
+// @match        *://*.testportal.*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
