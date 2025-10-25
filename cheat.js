@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Answer Helper (Groq API + Ignor + Strict Prompt + Checkboxes)
 // @namespace    https://github.com/Slizakjan/testportal-cheat
-// @version      1.7
+// @version      1.8
 // @author       Slizak_jan
 // @description  Automatické získávání odpovědí pomocí Groq API s ignor logikou, striktním promptem a podporou checkboxů
 // @match        https://*.testportal.net/*
@@ -82,119 +82,62 @@
     function getPrompt(data) {
         if (data.ignor === "True") return null;
 
-        let prompt = "";
+        const baseRules = `
+    ### System
+    You are an exam helper AI. Answer the questions provided by user.
 
-        // === Vyber prompt podle typu otázky ===
-        switch (data.type) {
-
-            // 🟩 Jedna správná odpověď
-            case "radio":
-                prompt = `
-    You are an exam helper AI. Select the single correct answer based on the question and options.
-    Return only the index (0-based) of the correct answer.
-
-    Do NOT write anything except a number.
-    If you are NOT 100% sure, you may take a guess or search online.
-
-    Question: "${data.question}"
-    ${data.image ? `Image: ${data.image}` : ""}
-    Answers:
-    ${data.answers.map((a, i) => `${i}. ${a.text || `[IMAGE: ${a.images?.[0]}]`}`).join("\n")}
-    `;
-                break;
-
-            // 🟦 Více správných odpovědí
-            case "checkbox":
-                prompt = `
-    You are an exam helper AI. Select all correct answers.
-    Return indexes separated by commas (e.g. "0,2,3").
-
-    Do NOT write anything except numbers.
-    If you are NOT 100% sure, you may take a guess or search online.
-
-    Question: "${data.question}"
-    ${data.image ? `Image: ${data.image}` : ""}
-    Answers:
-    ${data.answers.map((a, i) => `${i}. ${a.text || `[IMAGE: ${a.images?.[0]}]`}`).join("\n")}
-    `;
-                break;
-
-            // 🟨 Pravda / Nepravda
-            case "true_false":
-                prompt = `
-    You are an exam helper AI. Answer whether the following statement is true or false.
-    Return "0" for False, "1" for True.
-
-    Do NOT write anything except a number.
-    If you are NOT 100% sure, you may take a guess or search online.
-
-    Question: "${data.question}"
-    Answers:
-    ${data.answers.map((a, i) => `${i}. ${a.text}`).join("\n")}
-    `;
-                break;
-
-            // 🟪 Krátká odpověď
-            case "short":
-                prompt = `
-    You are an exam helper AI. Provide a short, concise answer (1–5 words).
-    Do NOT return explanations — only the answer text itself.
-    If unsure or lacking information, use online search or respond exactly with: UNKNOWN.
-
-    Question: "${data.question}"
-    ${data.image ? `Image: ${data.image}` : ""}
-    `;
-                break;
-
-            // 🟫 Popisná otázka (delší odpověď)
-            case "descriptive":
-                prompt = `
-    You are an exam helper AI. Write a clear, factual descriptive answer in a few sentences.
-    Do NOT explain beyond the answer itself.
-    If unsure, respond exactly with: UNKNOWN.
-
-    Question: "${data.question}"
-    ${data.image ? `Image: ${data.image}` : ""}
-    `;
-                break;
-
-            // 🔘 Fallback (pokud neznám typ)
-            default:
-                prompt = `
-    You are an exam helper AI. Analyze the question and answer correctly.
-    Do NOT explain beyond the answer itself.
-    If unsure, respond exactly with: UNKNOWN.
-
-    Question: "${data.question}"
-    ${data.image ? `Image: ${data.image}` : ""}
-    Answers:
-    ${data.answers.map((a, i) => `${i}. ${a.text || `[IMAGE: ${a.images?.[0]}]`}`).join("\n")}
-    `;
-                break;
-        }
-
-        // --- Instrukce pro online search
-        prompt += `
-
-    You may request an online search by replying only in JSON format:
-    {"search": "your query", "engine": "duckduckgo"}
+    ### Rules
+    - Answer format depends on question type (below)
+    - NEVER add explanation
+    - If you are missing context or not fully sure then you SHOULD request online search
+    - To request online search reply ONLY in JSON:
+    {"search": "<query>", "engine": "duckduckgo"}
     or
-    {"search": "your query", "engine": "google"}
-    and nothing else.
-
-    - "duckduckgo" = instant search (quick abstract / snippets)
-    - "google" = full web search using Google Custom Search API
-
-    You have 3 search attempts.
-    After all attempts are used, you must answer based on knowledge only.
-    If unsure even after that, respond exactly with the word: UNKNOWN.
-    If you have the final answer, respond with plain text only (no explanations).
+    {"search": "<query>", "engine": "google"}
+    - No other text when requesting search
+    When search attempts reach 0:
+        - Closed questions (radio/checkbox/true_false) you MUST answer (you may guess)
+        - Open questions (short/descriptive) if still unsure, respond exactly with UNKNOWN
 
     You have only ${data.remainingSearches} search attempts left.
     `;
 
-        return prompt.trim();
+        let answerInstruction = "";
+
+        switch (data.type) {
+            case "radio":
+                answerInstruction = `Return only one index (0-based).`;
+                break;
+            case "checkbox":
+                answerInstruction = `Return ALL correct indexes (0-based) separated by commas. Example: 0,2`;
+                break;
+            case "true_false":
+                answerInstruction = `Return "0" for False or "1" for True.`;
+                break;
+            case "short":
+                answerInstruction = `Provide a short answer (1-5 words).\nIf NOT sure even after online search, respond exacly with the word UNKNOWN.`;
+                break;
+            case "descriptive":
+                answerInstruction = `Provide 2-4 factual sentences.\nIf NOT sure even after online search, respond exacly with the word UNKNOWN.`;
+                break;
+            default:
+                answerInstruction = `Return the correct answer (format depends on options).`;
+        }
+
+        //     Question type: ${data.type}
+        return `
+    ${baseRules}
+
+    ${answerInstruction}
+
+    Question: "${data.question}"
+    ${data.image ? `Image: ${data.image}` : ""}
+
+    Options:
+    ${data.answers.map((a, i) => `${i}. ${a.text || `[IMAGE: ${a.images?.[0]}]`}`).join("\n")}
+    `.trim();
     }
+
 
     async function getQuestionData() {
         const questionEl = document.querySelector('.question_essence');
@@ -625,22 +568,28 @@
             data.originalPrompt = getPrompt(data);
         }
 
-        // --- prompt bude obsahovat jen poslední search result
-        const promptToSend = data.latestSearchResult
-            ? `${data.originalPrompt.replace(
-                /You have only .*? search attempts left\./,
-                `You have only ${data.remainingSearches} search attempts left.`
-            )}\n\n### Web search results:\n${data.latestSearchResult}`
-            : data.originalPrompt.replace(
-                /You have only .*? search attempts left\./,
-                `You have only ${data.remainingSearches} search attempts left.`
-            );
+        // --- aktualizujeme v originalPrompt pouze řádek s počtem zbývajících pokusů
+        const basePrompt = data.originalPrompt.replace(
+            /You have only .*? search attempts left\./,
+            `You have only ${data.remainingSearches} search attempts left.`
+        );
+
+        // --- Přidáme poslední výsledky hledání (pokud jsou)
+        let promptToSend = data.latestSearchResult
+            ? `${basePrompt}\n\n### Web search results:\n${data.latestSearchResult}`
+            : basePrompt;
+
+        // --- Zakázané hledání (aby se neopakovaly) — dynamicky přidáme jen pokud jsou
+        if (data.searchHistory && data.searchHistory.length) {
+            const bannedSearches = `\n\nDo NOT repeat these past searches:\n${data.searchHistory.join("\n")}`;
+            promptToSend += bannedSearches;
+        }
 
         console.log("📤 Prompt to AI:", promptToSend);
 
         const aiText = await askAI(promptToSend, API_KEY);
         console.log("📥 AI odpověď:", aiText);
-
+    
         // Zkoušíme JSON výzvu
         try {
             const json = JSON.parse(aiText);
