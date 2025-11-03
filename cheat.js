@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Answer Helper (Groq API + Ignor + Strict Prompt + Checkboxes)
 // @namespace    https://github.com/Slizakjan/testportal-cheat
-// @version      1.9
+// @version      2.0
 // @author       Slizak_jan
 // @description  Automatické získávání odpovědí pomocí Groq API s ignor logikou, striktním promptem a podporou checkboxů
 // @match        https://*.testportal.net/*
