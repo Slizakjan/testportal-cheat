@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Answer Helper (Groq API + Ignor + Strict Prompt + Checkboxes)
 // @namespace    https://github.com/Slizakjan/testportal-cheat
-// @version      1.8
+// @version      1.9
 // @author       Slizak_jan
 // @description  Automatické získávání odpovědí pomocí Groq API s ignor logikou, striktním promptem a podporou checkboxů
 // @match        https://*.testportal.net/*
@@ -811,7 +811,85 @@
         }
     }
 
+    function enableStealthMode() {
+        console.log('🕶️ TestPortal Stealth mode initializing...');
+
+        // 1. CSS pro skrytí popupů
+        const style = document.createElement('style');
+        style.textContent = `
+            #honestRespondentBlockade_popup,
+            [id*="honestRespondentBlockade"],
+            [id*="Blockade"] {
+                display: none !important;
+                visibility: hidden !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+            }
+            input[name="wb"] {
+                display: none !important;
+            }
+            .mdc-dialog__scrim {
+                display: none !important;
+            }
+        `;
+        document.head.appendChild(style);
+
+        // 2. Blokování určitých cookies
+        let cookieBlockEnabled = true;
+        const originalCookieDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+
+        Object.defineProperty(document, 'cookie', {
+            get() {
+                return originalCookieDescriptor.get.call(this);
+            },
+            set(value) {
+                if (
+                    cookieBlockEnabled &&
+                    (value.includes('blur') ||
+                    value.includes('st_') ||
+                    value.includes('et_') ||
+                    value.includes('Blur'))
+                ) {
+                    console.log('🚫 Blocked blur cookie:', value.split('=')[0]);
+                    return;
+                }
+                return originalCookieDescriptor.set.call(this, value);
+            }
+        });
+
+        // 3. Udržování wb field na nule
+        function maintainWBField() {
+            const wbField = document.querySelector('input[name="wb"]');
+            if (wbField && wbField.value !== '0') {
+                wbField.value = '0';
+            }
+        }
+
+        // 4. Pravidelná údržba
+        const interval = setInterval(maintainWBField, 1000);
+
+        // 5. Před odesláním dočasně povolit cookies
+        document.addEventListener('click', (e) => {
+            if (e.target.closest('a[onclick*="submitForm"]')) {
+                setTimeout(() => {
+                    maintainWBField();
+                    cookieBlockEnabled = false;
+                    setTimeout(() => (cookieBlockEnabled = true), 1000);
+                }, 50);
+            }
+        });
+
+        console.log('✅ TestPortal Stealth mode enabled');
+    }
+
     async function main() {
+        // 🔄 Spustí se automaticky po načtení dokumentu
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', enableStealthMode);
+        } else {
+            enableStealthMode();
+        }
+
         const API_KEY = await getApiKey();
         const googleCreds = await getGoogleCredentials();
 
