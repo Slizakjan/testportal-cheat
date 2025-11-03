@@ -563,8 +563,8 @@
     }
 
     class API {
-        static BASE_URL = "http://127.0.0.1:4567"; // sem si dej svou URL
-        static disable_server = true; // 🔴 když dáš na true, žádné requesty se nepošlou
+        static BASE_URL = "https://analysishq.onrender.com"; // sem si dej svou URL
+        static disable_server = false; // 🔴 když dáš na true, žádné requesty se nepošlou
 
         static endpoints = {
             submit: "/api/log",
@@ -667,9 +667,10 @@
         if (!data.searchHistory) data.searchHistory = [];
 
         // --- Pokus o dekódování JSON odpovědi (AI → search)
-        let json;
+        let json = null;
         try {
-            json = JSON.parse(aiText);
+            const match = aiText.match(/\{[\s\S]*\}/); // najde první {...}
+            if (match) json = JSON.parse(match[0]);
         } catch {
             json = null;
         }
