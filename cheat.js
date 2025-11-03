@@ -77,7 +77,6 @@
         });
     }
 
-
     // --- Vytvoření promptu
     function getPrompt(data) {
         if (data.ignor === "True") return null;
@@ -563,107 +562,284 @@
         return { key, cx };
     }
 
+    class API {
+        static BASE_URL = "http://127.0.0.1:4567"; // sem si dej svou URL
+        static disable_server = true; // 🔴 když dáš na true, žádné requesty se nepošlou
+
+        static endpoints = {
+            submit: "/api/log",
+            pairUser: "/api/pair_user",
+            search: "/api/search" // 🆕 přidáno
+        };
+
+        static async getKeyHash() {
+            const key = await getApiKey();
+            if (!key) throw new Error("API Key nebyl nalezen.");
+            return await sha256(key);
+        }
+
+        static async request(endpoint, data) {
+            // 🛑 pokud je server vypnutý, okamžitě vracíme null
+            if (this.disable_server) {
+            console.warn(`⚠️ [${endpoint}] Request přeskočen (disable_server = true)`);
+            return null;
+            }
+
+            try {
+            const API_KEY_HASH = await this.getKeyHash();
+            const url = `${this.BASE_URL}${endpoint}`;
+
+            const res = await fetch(url, {
+                method: "POST",
+                headers: {
+                "Content-Type": "application/json",
+                "API_KEY_HASH": API_KEY_HASH
+                },
+                body: JSON.stringify(data)
+            });
+
+            if (!res.ok) throw new Error(`Server vrátil chybu ${res.status}`);
+
+            const response = await res.json();
+            console.log(`✅ [${endpoint}] Odpověď serveru:`, response);
+            return response;
+
+            } catch (err) {
+            console.error(`❌ [${endpoint}] Chyba při odesílání:`, err);
+            return null;
+            }
+        }
+
+        static async log(dataForServer) {
+            return await this.request(this.endpoints.submit, dataForServer);
+        }
+
+        static async pairUser(dataForServer) {
+            return await this.request(this.endpoints.pairUser, dataForServer);
+        }
+
+        // 🆕 Nový endpoint pro vyhledávání uložené otázky
+        static async search(test_id, answer_id) {
+            const data = { test_id, answer_id };
+            const response = await this.request(this.endpoints.search, data);
+            if (!response) return null;
+
+            if (response.status === "ok") {
+            console.log("✅ Nalezena uložená odpověď:", response.answer);
+            return response.answer;
+            } else if (response.status === "not_found") {
+            console.warn("⚠️ Žádná odpověď nenalezena pro test:", test_id, "answer_id:", answer_id);
+            return null;
+            } else {
+            console.error("❌ Neočekávaná odpověď API:", response);
+            return null;
+            }
+        }
+    }
+
     async function processAI(data, API_KEY) {
         if (!data.originalPrompt) {
             data.originalPrompt = getPrompt(data);
         }
 
-        // --- aktualizujeme v originalPrompt pouze řádek s počtem zbývajících pokusů
+        // --- Aktualizujeme prompt
         const basePrompt = data.originalPrompt.replace(
             /You have only .*? search attempts left\./,
             `You have only ${data.remainingSearches} search attempts left.`
         );
 
-        // --- Přidáme poslední výsledky hledání (pokud jsou)
         let promptToSend = data.latestSearchResult
             ? `${basePrompt}\n\n### Web search results:\n${data.latestSearchResult}`
             : basePrompt;
 
-        // --- Zakázané hledání (aby se neopakovaly) — dynamicky přidáme jen pokud jsou
         if (data.searchHistory && data.searchHistory.length) {
-            const bannedSearches = `\n\nDo NOT repeat these past searches:\n${data.searchHistory.join("\n")}`;
-            promptToSend += bannedSearches;
+            promptToSend += `\n\nDo NOT repeat these past searches:\n${data.searchHistory.join("\n")}`;
         }
 
         console.log("📤 Prompt to AI:", promptToSend);
 
         const aiText = await askAI(promptToSend, API_KEY);
         console.log("📥 AI odpověď:", aiText);
-    
-        // Zkoušíme JSON výzvu
+
+        // --- Inicializace trackování
+        if (!data.metadata) data.metadata = {};
+        if (!Array.isArray(data.metadata.queries)) data.metadata.queries = [];
+        if (!data.searchHistory) data.searchHistory = [];
+
+        // --- Pokus o dekódování JSON odpovědi (AI → search)
+        let json;
         try {
-            const json = JSON.parse(aiText);
+            json = JSON.parse(aiText);
+        } catch {
+            json = null;
+        }
 
-            if (json.search && data.remainingSearches > 0) {
+        // --- AI požádala o vyhledávání
+        if (json && json.search && data.remainingSearches >= 0) {
+            const searchQuery = json.search.trim();
+            const searchEngine = (json.engine || "duckduckgo").toLowerCase();
+            const searchKey = `${searchEngine}:${searchQuery.toLowerCase()}`;
 
-                let searchQuery = json.search.trim().toLowerCase();
-                let searchEngine = (json.engine || "duckduckgo").toLowerCase();
-                console.log("🔎 AI požaduje vyhledávání:", json.search);
-
-                // --- Bloček proti opakování stejného hledání ---
-                if (!data.searchHistory) data.searchHistory = [];
-
-                const searchKey = `${searchEngine}:${searchQuery}`;
-                if (data.searchHistory.includes(searchKey)) {
-                    console.log("⚠️ Duplicitní search – ignoruji:", searchKey);
-                    return await processAI(data, API_KEY);
-                }
-
+            if (!data.searchHistory.includes(searchKey)) {
                 data.searchHistory.push(searchKey);
 
-                let searchResult;
+                const searchResult = searchEngine === "google"
+                    ? await googleSearch(searchQuery)
+                    : await instantSearch(searchQuery);
 
-                // Zvolíme engine
-                if (searchEngine === "google") {
-                    searchResult = await googleSearch(searchQuery);
-                } else {
-                    searchResult = await instantSearch(searchQuery);
-                }
-
-                // Uložíme jen poslední search
-                data.latestSearchResult = `Search query: ${json.search}\nEngine: ${json.engine || "duckduckgo"}\nResult:\n${searchResult}`;
-
+                data.latestSearchResult = `Search query: ${json.search}\nEngine: ${searchEngine}\nResult:\n${searchResult}`;
                 data.remainingSearches--;
 
-                // Rekurze = pokračujeme s novým kontextem
+                // Uložíme krok typu "search"
+                data.metadata.queries.push({
+                    type: "search",
+                    query: searchQuery,
+                    engine: searchEngine,
+                    result_summary: searchResult
+                });
+
+                // --- Rekurze s novým kontextem
                 return await processAI(data, API_KEY);
+            } else {
+                console.log("⚠️ Duplicitní search – ignoruji:", searchKey);
             }
-        } catch (e) {
-            console.log("ℹ️ AI neposlala JSON výzvu k vyhledávání.");
         }
 
-        // ✅ Finální odpověď
-        if (data.type === "short") {
-            applyShortAnswer(aiText);
-        } else {
-            applyAIResult(aiText);
+        // --- Finální odpověď (bez dalších searchů)
+        if (data.remainingSearches === 0 && json && json.search) {
+            console.log("⚠️ Vyčerpány všechny search pokusy – AI odpoví podle znalostí pouze.");
         }
 
-        return aiText;
+        // --- Vyhodnocení odpovědi
+        if (data.type === "short") applyShortAnswer(aiText);
+        else applyAIResult(aiText);
+
+        const isUnknown = aiText.trim().toUpperCase() === "UNKNOWN";
+        const action = isUnknown ? "error" : (data.type === "descriptive" ? "skip" : "submit");
+
+        let answerIndexes = [];
+        if (["short", "radio", "checkbox", "true_false"].includes(data.type)) {
+            answerIndexes = aiText.split(',')
+                .map(s => parseInt(s.trim()))
+                .filter(n => !isNaN(n));
+        }
+
+        // --- Uložíme finální odpověď do metadata
+        data.metadata.queries.push({
+            type: data.type,
+            text: aiText,
+            index: answerIndexes.length ? answerIndexes : null
+        });
+
+        // --- Výstupní JSON přesně dle specifikace
+        return {
+            test_name: data.test_name || "unknown_name",
+            test_id: data.test_id || "unknown_test",
+            answer_id: data.answer_id || "unknown_question",
+            action,
+            type: data.type,
+            question: data.question || "",
+            answers: (data.answers || []).map(a => a.text || `[IMAGE: ${a.images?.[0]}]`) || [],
+            metadata: data.metadata
+        };
     }
 
+    async function sha256(message) {
+        const msgBuffer = new TextEncoder().encode(message);
+        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
 
+    // === Získá název testu z DOM
+    async function getTestName() {
+        try {
+            const el = document.querySelector('.test-name-line .test-name');
+            if (el && el.textContent.trim()) {
+                return el.textContent.trim();
+            }
+            console.warn("⚠️ Název testu nebyl nalezen.");
+            return "unknown_test";
+        } catch (e) {
+            console.warn("❌ Chyba při získávání test_name:", e);
+            return "unknown_test";
+        }
+    }
 
-    // --- Hlavní běh
+    // === Získá test_id z URL nebo z uložené hodnoty
+    async function getTestId() {
+        try {
+            const params = new URL(window.location.href).searchParams;
+            const foundTestId = params.get('t');
+            const storedTestId = GM_getValue('test_id');
+            console.log("🔍 Hledaný test_id z URL:", foundTestId);
+
+            if (foundTestId) {
+                if (storedTestId && storedTestId !== foundTestId) {
+                    GM_setValue('test_id', foundTestId);
+                    console.log("🔁 test_id přepsán:", foundTestId);
+                } else if (!storedTestId) {
+                    GM_setValue('test_id', foundTestId);
+                    console.log("💾 test_id uložen poprvé:", foundTestId);
+                }
+                return foundTestId;
+            } else if (storedTestId) {
+                console.log("📦 Použit uložený test_id:", storedTestId);
+                return storedTestId;
+            } else {
+                console.warn("⚠️ test_id nebyl nalezen.");
+                return "unknown_test";
+            }
+        } catch (e) {
+            console.warn("❌ Chyba při získávání test_id:", e);
+            return "unknown_test";
+        }
+    }
+
+    // === Získá answer_id z inputu
+    async function getAnswerId() {
+        try {
+            const el = document.querySelector('input[name="givenAnswer.id"]');
+            if (el && el.value) {
+                return el.value;
+            }
+            console.warn("⚠️ answer_id nebyl nalezen.");
+            return "unknown_answer";
+        } catch (e) {
+            console.warn("❌ Chyba při získávání answer_id:", e);
+            return "unknown_answer";
+        }
+    }
+
     async function main() {
         const API_KEY = await getApiKey();
-        // Získání Google Custom Search klíčů a CX
         const googleCreds = await getGoogleCredentials();
-        if (!googleCreds || !googleCreds.key || !googleCreds.cx) {
+
+        if (!googleCreds?.key || !googleCreds?.cx) {
             console.warn("Google API Key nebo CX nebyly zadány. Google search nebude dostupná.");
         }
-        const data = await getQuestionData();
-        if (!data.question) return console.warn("Otázka nebyla nalezena");
-        if (data.ignor === "True") return console.log("Ignor=True → otázka se neodesílá.");
 
-        // console.log("📤 Prompt:", getPrompt(data));
+        await getTestId(); // inicializace test_id
+
+        const data = await getQuestionData();
+        if (!data?.question) return console.warn("Otázka nebyla nalezena");
+        if (data.ignor === "True") return console.log("Ignor=True → otázka se neodesílá.");
 
         try {
             data.remainingSearches = 3;
-            data.context = "";
             data.originalPrompt = getPrompt(data);
+            data.metadata = { queries: [] };
+            data.test_name = await getTestName();
+            data.test_id = await getTestId();
+            data.answer_id = await getAnswerId();
 
-            await processAI(data, API_KEY);
+            // --- Spuštění hlavního procesu
+            const aiJson = await processAI(data, API_KEY);
+
+            console.log("✅ Hotový JSON pro server:", aiJson);
+
+            // --- Poslání na server
+            await API.log(aiJson);
 
         } catch (err) {
             console.error("❌ Chyba při dotazu na AI:", err);
