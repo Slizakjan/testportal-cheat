@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Answer Helper (Groq API + Ignor + Strict Prompt + Checkboxes)
 // @namespace    https://github.com/Slizakjan/testportal-cheat
-// @version      2.1
+// @version      2.2
 // @author       Slizak_jan
 // @description  Automatické získávání odpovědí pomocí Groq API s ignor logikou, striktním promptem a podporou checkboxů
 // @match        https://*.testportal.net/*
@@ -683,10 +683,20 @@
 
         // --- Pokus o dekódování JSON odpovědi (AI → search)
         let json = null;
+
         try {
-            const match = aiText.match(/\{[\s\S]*\}/); // najde první {...}
-            if (match) json = JSON.parse(match[0]);
-        } catch {
+            // Trim whitespace
+            const trimmedText = aiText.trim();
+
+            // Najdi první validní JSON objekt (jednodušší metoda)
+            const match = trimmedText.match(/\{.*?\}/s); // non-greedy match, dotall režim
+            if (match) {
+                // Odstraní možné skryté znaky kolem JSON
+                const cleanJson = match[0].trim();
+                json = JSON.parse(cleanJson);
+            }
+        } catch (e) {
+            console.warn("Chyba při parsování JSON:", e);
             json = null;
         }
 
