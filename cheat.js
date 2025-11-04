@@ -133,42 +133,24 @@
     ${data.image ? `Image: ${data.image}` : ""}
 
     Options:
-    ${data.answers.map((a, i) => `${i}. ${a.text || `[IMAGE: ${a.images?.[0]}]`}`).join("\n")}
+    ${data.answers.map((a, i) => {
+        // pokud text obsahuje jen "zoom-in" nebo "Zoom image" -> ignoruj a použij obrázek
+        const isPlaceholder = a.text && /zoom[-\s]*in/i.test(a.text);
+        const displayText = (!a.text || isPlaceholder) && a.images?.length
+            ? `[IMAGE: ${a.images[0]}]`
+            : a.text;
+        return `${i}. ${displayText}`;
+    }).join("\n")}
     `.trim();
     }
 
 
     async function getQuestionData() {
+        // --- otázka
         const questionEl = document.querySelector('.question_essence');
         const question = questionEl ? questionEl.innerText.trim() : null;
 
-        const answers = Array.from(document.querySelectorAll('.answer_container')).map(container => {
-            const imgs = Array.from(container.querySelectorAll('.answer_body img'));
-            const imageUrls = imgs.map(img => {
-                let src = img.getAttribute('src');
-                if (!src || src.startsWith('data:image/gif')) {
-                    src =
-                        img.getAttribute('data-src') ||
-                        img.getAttribute('data-original') ||
-                        img.getAttribute('data-lazy') ||
-                        img.getAttribute('srcset') ||
-                        null;
-                }
-                if (src && src.includes(' ')) src = src.split(' ')[0];
-                return src;
-            }).filter(Boolean);
-
-            const textParts = Array.from(container.querySelectorAll('.answer_body p, .answer_body li'))
-            .map(el => el.innerText.trim())
-            .filter(Boolean)
-            .join(' ');
-
-            return {
-                text: textParts || null,
-                images: imageUrls.length ? imageUrls : null
-            };
-        }).filter(a => a.text || a.images);
-
+        // --- obrázky otázky
         const questionImgs = document.querySelectorAll('.question_essence img');
         let imageData = null;
         if (questionImgs.length > 0) {
@@ -185,7 +167,44 @@
             imageData = src;
         }
 
-        // --- detekce typu podle hidden inputu nebo struktury
+        // --- odpovědi
+        const answers = Array.from(document.querySelectorAll('.answer_container')).map(container => {
+            const imgs = Array.from(container.querySelectorAll('.answer_body img'));
+            const imageUrls = imgs.map(img => {
+                let src = img.getAttribute('src');
+                if (!src || src.startsWith('data:image/gif')) {
+                    src =
+                        img.getAttribute('data-src') ||
+                        img.getAttribute('data-original') ||
+                        img.getAttribute('data-lazy') ||
+                        img.getAttribute('srcset') ||
+                        null;
+                }
+                if (src && src.includes(' ')) src = src.split(' ')[0];
+                return src;
+            }).filter(Boolean);
+
+            // text odpovědi
+            let textParts = Array.from(container.querySelectorAll('.answer_body p, .answer_body li'))
+                .map(el => el.innerText.trim())
+                .filter(Boolean)
+                .join(' ');
+
+            // pokud není text, použij alt u obrázků
+            if (!textParts && imgs.length > 0) {
+                textParts = imgs.map(img => img.getAttribute('alt')).filter(Boolean).join(' ');
+            }
+
+            // pokud ani alt neexistuje, dej placeholder
+            if (!textParts && imgs.length > 0) textParts = "Image";
+
+            return {
+                text: textParts || null,
+                images: imageUrls.length ? imageUrls : null
+            };
+        }).filter(a => a.text || a.images);
+
+        // --- detekce typu otázky
         const questionTypeInput = document.querySelector('input[name="givenAnswer.questionType"]');
         let type = "unknown";
 
@@ -195,8 +214,6 @@
                     type = "checkbox";
                     break;
                 case "SINGLE_ANSWER":
-                    type = "radio";
-                    break;
                 case "TRUE_FALSE":
                     type = "radio";
                     break;
@@ -210,11 +227,9 @@
             type = "image";
         }
 
-        // --- logika pro ignorování otázek
+        // --- ignorování otevřených otázek
         let ignor = "False";
-        if (type === "descriptive") {
-            ignor = "True"; // otevřená otázka, ignorovat
-        }
+        if (type === "descriptive") ignor = "True";
 
         return { question, answers, image: imageData, type, ignor };
     }
@@ -883,6 +898,182 @@
         console.log('✅ TestPortal Stealth mode enabled');
     }
 
+    // ---------- Helper: vytvoří prompt (včetně obrázků) ----------
+    function createPrompt(data) {
+        if (!data || !data.question) return "";
+
+        const { question, answers = [], type = "unknown", image = null } = data;
+
+        // pomocná funkce: detekuje "placeholder" text (zoom-in, zoom image, atd.)
+        function isPlaceholderText(t) {
+            if (!t) return true;
+            const s = String(t).trim().toLowerCase();
+            if (!s) return true;
+            return /^zoom\b|zoom[-\s]?in|zoom image|zoom$/i.test(s);
+        }
+
+        let promptLines = [];
+        promptLines.push("Otázka:");
+        promptLines.push(question);
+        promptLines.push(""); // prázdný řádek
+        promptLines.push("Nepřidávehejte žádný další text mimo požadované instrukce.");
+        promptLines.push(""); // prázdný řádek
+
+        // vložíme hlavní obrázek otázky (pokud je)
+        if (image) {
+            promptLines.push(`📷 Související obrázek: ${image}`);
+            promptLines.push("");
+        }
+
+        // instrukce podle typu otázky
+        switch (type) {
+            case "radio":
+                promptLines.push("Vyberte přesně jednu z následujících možností:");
+                break;
+            case "checkbox":
+                promptLines.push("Vyberte všechny správné možnosti z níže uvedeného seznamu:");
+                break;
+            case "true_false":
+                promptLines.push("Odpovězte Pravda nebo Nepravda.");
+                break;
+            case "short":
+                promptLines.push("Uveďte krátkou odpověď (1-5 slov).");
+                break;
+            case "descriptive":
+            case "essay":
+                promptLines.push("Poskytněte podrobnou odpověď nebo krátké shrnutí.");
+                break;
+            default:
+                promptLines.push("Odpovězte vhodně podle typu otázky.");
+        }
+
+        // Přidej možnosti
+        if (Array.isArray(answers) && answers.length) {
+            promptLines.push(""); // oddělovač
+            promptLines.push("Možnosti:");
+            answers.forEach((a, i) => {
+                const index = i + 1; // 1-based
+                const text = (typeof a === "object" && a.text) ? String(a.text).trim() : (typeof a === "string" ? a.trim() : "");
+                const imgs = (typeof a === "object" && Array.isArray(a.images)) ? a.images.filter(Boolean) : [];
+
+                if (imgs.length) {
+                    promptLines.push(`${index}. [Obrázková možnost]`);
+                    imgs.forEach((url, idx) => {
+                        promptLines.push(`   - Obrázek ${idx + 1}: ${url}`);
+                    });
+                    if (text && !isPlaceholderText(text)) {
+                        promptLines.push(`   - Text: ${text}`);
+                    }
+                } else {
+                    if (text && !isPlaceholderText(text)) {
+                        promptLines.push(`${index}. ${text}`);
+                    } else {
+                        promptLines.push(`${index}. [není k dispozici text ani obrázek]`);
+                    }
+                }
+            });
+        }
+
+        // instrukce pro uzavřené otázky
+        if (["radio", "checkbox", "true_false"].includes(type)) {
+            promptLines.push("");
+            promptLines.push("Vraťte pouze číslo správné možnosti (1-based).");
+        }
+
+        return promptLines.join("\n");
+    }
+
+    // ---------- Přidání tlačítka pro kopírování promptu ----------
+    function addCopyButtonForQuestion(data) {
+        if (!data) return;
+
+        const p = document.querySelector('.question_essence p');
+        if (!p) return;
+
+        if (p.querySelector('.copy-btn-attached')) return;
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'copy-btn-attached';
+        btn.setAttribute('aria-label', 'Copy prompt');
+        btn.title = 'Copy prompt';
+
+        // stylování
+        btn.style.marginLeft = '8px';
+        btn.style.cursor = 'pointer';
+        btn.style.backgroundColor = 'transparent';
+        btn.style.border = 'none';
+        btn.style.padding = '2px 6px';
+        btn.style.fontSize = '0';  // odstraníme textové zarovnání
+        btn.style.display = 'inline-flex';
+        btn.style.alignItems = 'center';
+        btn.style.justifyContent = 'center';
+
+        // ikona jako SVG pro kopírování
+        btn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f5f5f5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>`;
+
+        // btn.addEventListener('mouseover', () => btn.style.backgroundColor = '#e0e0e0');
+        // btn.addEventListener('mouseout', () => btn.style.backgroundColor = '#f0f0f0');
+
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            const prompt = createPrompt(data);
+            navigator.clipboard.writeText(prompt)
+                .then(() => showToast('Prompt copied ✅'))
+                .catch(err => {
+                    console.error('Copy failed:', err);
+                    showToast('Copy failed ❌');
+                });
+        });
+
+        p.appendChild(btn);
+    }
+
+    // ---------- Jednoduchý toast ----------
+    function showToast(message) {
+        const existing = document.querySelector('.copy-prompt-toast');
+        if (existing) {
+            existing.textContent = message;
+            existing.classList.add('show');
+            clearTimeout(existing._hideTimer);
+            existing._hideTimer = setTimeout(() => existing.classList.remove('show'), 1800);
+            return;
+        }
+
+        const t = document.createElement('div');
+        t.className = 'copy-prompt-toast';
+        t.textContent = message;
+        Object.assign(t.style, {
+            position: 'fixed',
+            right: '18px',
+            bottom: '18px',
+            background: '#222',
+            color: '#fff',
+            padding: '8px 12px',
+            borderRadius: '8px',
+            opacity: '0',
+            transform: 'translateY(8px)',
+            transition: 'all 0.22s ease',
+            zIndex: 9999,
+        });
+        document.body.appendChild(t);
+        requestAnimationFrame(() => {
+            t.style.opacity = '1';
+            t.style.transform = 'translateY(0)';
+        });
+        t._hideTimer = setTimeout(() => {
+            t.style.opacity = '0';
+            t.style.transform = 'translateY(8px)';
+            setTimeout(() => t.remove(), 220);
+        }, 1800);
+    }
+
     async function main() {
         // 🔄 Spustí se automaticky po načtení dokumentu
         if (document.readyState === 'loading') {
@@ -901,6 +1092,10 @@
         await getTestId(); // inicializace test_id
 
         const data = await getQuestionData();
+        console.log(data);
+
+        addCopyButtonForQuestion(data);
+
         if (!data?.question) return console.warn("Otázka nebyla nalezena");
         if (data.ignor === "True") return console.log("Ignor=True → otázka se neodesílá.");
 
